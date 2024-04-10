@@ -6,13 +6,23 @@
 #define TEAM_SURVIVOR  2
 #define TEAM_INFECTED  3
 #define TEAM_HOLDOUT   4
-
-#define MAX_COLOR_NUM  5
+#define MAX_COLOR_NUM  10
 
 Handle	  g_hFindUseEntity;
 StringMap g_smModelToName;
-int		  gRandomColors[MAX_COLOR_NUM][3];
-ConVar	  cvarPlayerUseRadius;
+int		  gRandomColors[MAX_COLOR_NUM][3] = {
+	  {55,	158, 145},
+	  { 154, 92,	 221},
+	  { 129, 112, 7	},
+	  { 253, 59,	 67 },
+	  { 133, 174, 163},
+	  { 162, 237, 84 },
+	  { 207, 148, 41 },
+	  { 182, 156, 44 },
+	  { 241, 182, 249},
+	  { 185, 2,	222}
+};
+ConVar cvarPlayerUseRadius;
 
 public Plugin myinfo =
 {
@@ -26,25 +36,8 @@ public Plugin myinfo =
 public void OnPluginStart()
 {
 	Init();
-	InitRandomColor();
 	cvarPlayerUseRadius = FindConVar("player_use_radius");
 	AddCommandListener(CmdListener_vocalize, "vocalize");
-}
-
-void InitRandomColor()
-{
-	for (int i = 0; i < MAX_COLOR_NUM; i++)
-	{
-		int colorRandom[3];
-		do
-		{
-			colorRandom[0]	 = GetRandomInt(0, 255);
-			colorRandom[1]	 = GetRandomInt(0, 255);
-			colorRandom[2]	 = GetRandomInt(0, 255);
-			gRandomColors[i] = colorRandom;
-		}
-		while (GetRGB_Brightness(colorRandom) < 0.5);
-	}
 }
 
 void Init()
@@ -128,17 +121,6 @@ void Init()
 	g_smModelToName.SetString("models/props/terror/incendiary_ammo.mdl", "燃烧弹!");
 }
 
-float GetRGB_Brightness(int[] rgb)
-{
-	int r	 = rgb[0];
-	int g	 = rgb[1];
-	int b	 = rgb[2];
-
-	int cmax = (r > g) ? r : g;
-	if (b > cmax) cmax = b;
-	return cmax / 255.0;
-}
-
 Action CmdListener_vocalize(int client, const char[] command, int argc)
 {
 	static char sArg[32], sModel[PLATFORM_MAX_PATH], sName[64];
@@ -156,7 +138,7 @@ Action CmdListener_vocalize(int client, const char[] command, int argc)
 					{
 						PrintToChatAll("\x01(语音) \x05%N\x01: %s", client, sName);
 
-						int randomIndex = GetRandomInt(0, 4);
+						int randomIndex = GetRandomInt(0, MAX_COLOR_NUM - 1);
 
 						int r			= gRandomColors[randomIndex][0];
 						int g			= gRandomColors[randomIndex][1];
