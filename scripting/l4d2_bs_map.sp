@@ -17,6 +17,7 @@ Menu	  gMissionMenu		   = null;
 Menu	  gChapterMenu		   = null;
 StringMap gMissions			   = null;
 StringMap gChapters			   = null;
+Database  hDatabase			   = null;
 
 public void OnPluginStart()
 {
@@ -27,10 +28,10 @@ public void OnPluginStart()
 	cvarCurrentMission = CreateConVar("bs_current_mission", "", "存储当前任务");
 	RegAdminCmd("sm_mode", Command_ChangeMode, ADMFLAG_ROOT, "更换游戏模式");
 	RegAdminCmd("sm_diff", Command_ChangeDiff, ADMFLAG_ROOT, "更换游戏难度");
+	RegAdminCmd("sm_refreshmap", Command_RefreshMap, ADMFLAG_ROOT, "刷新地图");
 	RegConsoleCmd("sm_chmap", Command_ChangeMap, "更换官方地图");
 	RegConsoleCmd("sm_chmap2", Command_ChangeMap2, "更换三方地图");
 	HookEvent("finale_win", OnFinaleWin);
-	LoadMapList();
 }
 
 public void OnPluginEnd()
@@ -84,54 +85,130 @@ public void OnMapInit(const char[] mapName)
 	}
 }
 
+bool ConnectMysql()
+{
+	char	 error[255];
+	Database db = SQL_DefConnect(error, sizeof(error), true);
+	if (db == null)
+	{
+		LogError("mysql connect failed :%s", error);
+		return false;
+	}
+	hDatabase = db;
+	return true
+}
+
+int FindMissionId(const char[] mode, const char[] name)
+{
+	char query[PLATFORM_MAX_PATH];
+	Format(query, sizeof(query), "select id from missions where mode='%s' and name='%s'", mode, name);
+	DBResultSet res = SQL_Query(hDatabase, query);
+	if (res == null)
+	{
+		return 0;
+	}
+	if (!SQL_FetchRow(res))
+	{
+		return 0;
+	}
+	return SQL_FetchInt(res, 0);
+}
+
+int SaveMission(const char[] mode, const char[] name, const char[] display_title, const char[] version, const char[] author)
+{
+	char query[PLATFORM_MAX_PATH];
+	Format(query, sizeof(query), "insert into missions(mode,name,display_title,version,author)('%s','%s','%s','%s','%s') RETURNING id", mode, name, display_title, version, author);
+	DBResultSet res = SQL_Query(hDatabase, query);
+	if (res == null)
+	{
+		return 0;
+	}
+	SQL_FetchRow(res);
+	return SQL_FetchInt(res, 0);
+}
+
+void SaveChapter(int mission_id, const char[] map, const char[] display_name)
+{
+	char query[PLATFORM_MAX_PATH];
+	Format(query, sizeof(query), "insert into chapters(mission_id,map,display_name)(%d,'%s','%s')", mission_id, map, display_name);
+	SQL_FastQuery(hDatabase, query)
+}
+
 void LoadMapList()
 {
 	LogMessage("LoadMapList>>>");
-	gMissions				 = new StringMap();
-	gChapters				 = new StringMap();
+
 	DirectoryListing dirList = OpenDirectory("missions", true, NULL_STRING);
 	KeyValues		 kv		 = CreateKeyValues("mission", "", "");
 	if (dirList)
 	{
-		char	 fileName[1024];
-		char	 mapName[128];
+		char fileName[PLATFORM_MAX_PATH];
+		char name[PLATFORM_MAX_PATH];
+		char displayTitle[PLATFORM_MAX_PATH];
+		char version[PLATFORM_MAX_PATH];
+		char author[PLATFORM_MAX_PATH];
+
+		ConnectMysql();
+
 		FileType fileType;
 		while (dirList.GetNext(fileName, sizeof(fileName), fileType))
 		{
-			char missionPath[1024];
+			char missionPath[PLATFORM_MAX_PATH];
 			Format(missionPath, sizeof(missionPath), "missions/%s", fileName);
 			if (fileType == FileType_File)
 			{
 				if (strcmp("credits.txt", fileName, false))
 				{
 					kv.ImportFromFile(missionPath);
-					kv.GetString("Name", mapName, sizeof(mapName));
-					ArrayList chapters = new ArrayList(100, 0);
-					char	  chapter[1024];
+					kv.GetString("Name", name, sizeof(name));
+					kv.GetString("DisplayTitle", displayTitle, sizeof(displayTitle));
+					kv.GetString("Version", version, sizeof(version));
+					kv.GetString("Author", author, sizeof(author));
+
+					char map[PLATFORM_MAX_PATH];
+					char displayName[PLATFORM_MAX_PATH];
 
 					if (kv.JumpToKey("modes", false))
 					{
-						if (kv.JumpToKey("coop", false))
+						if (!(kv.GotoFirstSubKey(false)))
 						{
+							return;
+						}
+						char mode[PLATFORM_MAX_PATH];
+						do
+						{
+							kv.GetSectionName(mode, sizeof(mode));
+							int missionId = FindMissionId(mode, name);
+							if (missionId == 0)
+							{
+								missionId = SaveMission(mode, name, displayTitle, version, author);
+							}
+							if (missionId == 0)
+							{
+								LogMessage("create mission failed");
+								return;
+							}
+
 							if (!(kv.GotoFirstSubKey(false)))
 							{
+								return;
 							}
 							do
 							{
-								kv.GetString("Map", chapter, sizeof(chapter));
-								chapters.PushString(chapter);
-								gChapters.SetString(chapter, mapName, true);
+								kv.GetString("Map", map, sizeof(map));
+								kv.GetString("DisplayName", displayName, sizeof(displayName));
+								SaveChapter(missionId, map, displayName)
 							}
 							while (kv.GotoNextKey(true));
-							gMissions.SetValue(mapName, chapters, true)
 						}
+						while (kv.GotoNextKey(true));
 					}
 				}
 			}
 		}
-
 		delete dirList;
 		delete kv;
+		delete hDatabase;
 	}
 	else
 	{
@@ -387,6 +464,13 @@ Action Command_ChangeMode(int client, int args)
 	GetCmdArgString(mode, 64);
 	SetConVarString(FindConVar("mp_gamemode"), mode);
 	PrintToChatAll("\x04[BS]\x05当前模式已更换成\x04[\x03%s\x04]", mode);
+	return Plugin_Handled;
+}
+
+Action Command_RefreshMap(int client, args)
+{
+
+	LoadMapList();
 	return Plugin_Handled;
 }
 
