@@ -32,6 +32,8 @@ public void OnPluginStart()
 	RegConsoleCmd("sm_chmap", Command_ChangeMap, "更换官方地图");
 	RegConsoleCmd("sm_chmap2", Command_ChangeMap2, "更换三方地图");
 	HookEvent("finale_win", OnFinaleWin);
+
+	LoadMapList();
 }
 
 public void OnPluginEnd()
@@ -66,26 +68,26 @@ void SetRandomMission(const char[] mission)
 
 public void OnMapInit(const char[] mapName)
 {
-	char mission[PLATFORM_MAX_PATH];
-	gChapters.GetString(mapName, mission, sizeof(mission));
-	cvarCurrentMission.SetString(mission);
-	//检查是否是最后一关
-	ArrayList chapters;
-	gMissions.GetValue(mission, chapters);
-	int chapterIndex = chapters.FindString(mapName);
-	if (chapterIndex == chapters.Length - 1)
-	{
-		LogMessage("Is Finale Map>>>");
-		char nextMap[PLATFORM_MAX_PATH];
-		cvarNextChapter.GetString(nextMap, sizeof(nextMap));
-		if (!IsMapValid(nextMap))
-		{
-			SetRandomMission(mission);
-		}
-	}
+	// char mission[PLATFORM_MAX_PATH];
+	// gChapters.GetString(mapName, mission, sizeof(mission));
+	// cvarCurrentMission.SetString(mission);
+	// //检查是否是最后一关
+	// ArrayList chapters;
+	// gMissions.GetValue(mission, chapters);
+	// int chapterIndex = chapters.FindString(mapName);
+	// if (chapterIndex == chapters.Length - 1)
+	// {
+	// 	LogMessage("Is Finale Map>>>");
+	// 	char nextMap[PLATFORM_MAX_PATH];
+	// 	cvarNextChapter.GetString(nextMap, sizeof(nextMap));
+	// 	if (!IsMapValid(nextMap))
+	// 	{
+	// 		SetRandomMission(mission);
+	// 	}
+	// }
 }
 
-bool ConnectMysql()
+bool OpenDatabase()
 {
 	char	 error[255];
 	Database db = SQL_DefConnect(error, sizeof(error), true);
@@ -96,6 +98,14 @@ bool ConnectMysql()
 	}
 	hDatabase = db;
 	return true
+}
+
+void CloseDatabase()
+{
+	if (hDatabase != null)
+	{
+		delete hDatabase;
+	}
 }
 
 int FindMissionId(const char[] mode, const char[] name)
@@ -116,11 +126,20 @@ int FindMissionId(const char[] mode, const char[] name)
 
 int SaveMission(const char[] mode, const char[] name, const char[] display_title, const char[] version, const char[] author)
 {
+	char err[PLATFORM_MAX_PATH];
 	char query[PLATFORM_MAX_PATH];
-	Format(query, sizeof(query), "insert into missions(mode,name,display_title,version,author)('%s','%s','%s','%s','%s') RETURNING id", mode, name, display_title, version, author);
-	DBResultSet res = SQL_Query(hDatabase, query);
+	Format(query, sizeof(query), "insert into missions(mode,name,display_title,version,author,sort_num)values('%s','%s','%s','%s','%s',0)", mode, name, display_title, version, author);
+	if (!SQL_FastQuery(hDatabase, query))
+	{
+		SQL_GetError(hDatabase, err, sizeof(err));
+		LogError("exec sql err:%s,sql:%s", err, query);
+		return 0;
+	}
+	DBResultSet res = SQL_Query(hDatabase, "select @@IDENTITY;");
 	if (res == null)
 	{
+		SQL_GetError(hDatabase, err, sizeof(err));
+		LogError("exec sql err:%s,sql:%s", err, query);
 		return 0;
 	}
 	SQL_FetchRow(res);
@@ -129,9 +148,37 @@ int SaveMission(const char[] mode, const char[] name, const char[] display_title
 
 void SaveChapter(int mission_id, const char[] map, const char[] display_name)
 {
+	char err[PLATFORM_MAX_PATH];
 	char query[PLATFORM_MAX_PATH];
-	Format(query, sizeof(query), "insert into chapters(mission_id,map,display_name)(%d,'%s','%s')", mission_id, map, display_name);
-	SQL_FastQuery(hDatabase, query)
+	Format(query, sizeof(query), "insert into chapters(mission_id,map,display_name)values(%d,'%s','%s')", mission_id, map, display_name);
+	if (!SQL_FastQuery(hDatabase, query))
+	{
+		SQL_GetError(hDatabase, err, sizeof(err));
+		LogError("exec sql err:%s,sql:%s", err, query);
+	}
+}
+
+void GetMissionList(const char[] mode)
+{
+	char gamemode[20];
+	FindConVar("mp_gamemode").GetString(gamemode, sizeof(gamemode));
+	char err[PLATFORM_MAX_PATH];
+	char query[PLATFORM_MAX_PATH];
+	Format(query, sizeof(query), "select name,display_title from missions where mode='%s' order by sort_num asc", gamemode);
+	DBResultSet rs = SQL_Query(hDatabase, query);
+	if (rs == null)
+	{
+		SQL_GetError(hDatabase, err, sizeof(err));
+		LogError("exec sql err:%s,sql:%s", err, query);
+		return;
+	}
+	while (SQL_FetchRow(rs))
+	{
+		char mission[PLATFORM_MAX_PATH];
+		char missionName[PLATFORM_MAX_PATH];
+		SQL_FetchString(rs, 0, mission, sizeof(mission));
+		SQL_FetchString(rs, 1, missionName, sizeof(mission));
+	}
 }
 
 void LoadMapList()
@@ -148,7 +195,7 @@ void LoadMapList()
 		char version[PLATFORM_MAX_PATH];
 		char author[PLATFORM_MAX_PATH];
 
-		ConnectMysql();
+		OpenDatabase();
 
 		FileType fileType;
 		while (dirList.GetNext(fileName, sizeof(fileName), fileType))
@@ -208,7 +255,7 @@ void LoadMapList()
 		}
 		delete dirList;
 		delete kv;
-		delete hDatabase;
+		CloseDatabase();
 	}
 	else
 	{
@@ -469,7 +516,6 @@ Action Command_ChangeMode(int client, int args)
 
 Action Command_RefreshMap(int client, args)
 {
-
 	LoadMapList();
 	return Plugin_Handled;
 }
