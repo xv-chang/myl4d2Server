@@ -3,60 +3,91 @@
 public Plugin myinfo =
 {
 	name		= "BS Change MAP",
-	description = "管理员换图",
+	description = "换图",
 	author		= "那一世的悲伤",
 	version		= "1.0",
 	url			= "http://www.sourcemod.net/"
 };
 
-char	  officalMapPrefix[80] = "L4D2C";
-ConVar	  cvarNextChapter	   = null;
-ConVar	  cvarNextMission	   = null;
-Menu	  gMissionMenu		   = null;
-Menu	  gChapterMenu		   = null;
-StringMap gMissions			   = null;
-StringMap gChapters			   = null;
-Database  hDatabase			   = null;
+ConVar	  cvarNextChapter  = null;
+Menu	  gMissionMenu	   = null;
+Menu	  gChapterMenu	   = null;
+ArrayList gMissionIds	   = null;
+ArrayList gMissionNames	   = null;
+ArrayList gMissionChapters = null;
+ArrayList gChapters		   = null;
+Database  hDatabase		   = null;
+char	  gMapMode[MAX_NAME_LENGTH];
+//当前任务信息
+int		  gMissionId = 0;
+char	  gMissionName[MAX_NAME_LENGTH];
 
 public void OnPluginStart()
 {
-	cvarNextMission = CreateConVar("bs_next_mission", "", "存储下一关任务");
 	cvarNextChapter = CreateConVar("bs_next_chapter", "", "存储下一关章节");
-	RegAdminCmd("sm_mode", Command_ChangeMode, ADMFLAG_ROOT, "更换游戏模式");
-	RegAdminCmd("sm_diff", Command_ChangeDiff, ADMFLAG_ROOT, "更换游戏难度");
-	RegAdminCmd("sm_refreshmap", Command_RefreshMap, ADMFLAG_ROOT, "刷新地图");
+	RegAdminCmd("sm_read_missions", Command_ReadMissions, ADMFLAG_ROOT, "读取地图信息");
 	RegConsoleCmd("sm_chmap", Command_ChangeMission, "更换任务");
 	RegConsoleCmd("sm_chmap2", Command_ChangeChapter, "更换章节");
 	HookEvent("finale_win", OnFinaleWin);
+	OpenDatabase();
 }
 
 public void OnPluginEnd()
 {
-	delete gMissions;
+	delete gMissionIds;
+	delete gMissionNames;
+	delete gMissionChapters;
 	delete gChapters;
 	delete gMissionMenu;
 	delete gChapterMenu;
+	CloseDatabase();
+}
+void InitMapMode()
+{
+	char gameMode[50];
+	FindConVar("mp_gamemode").GetString(gameMode, sizeof(gameMode));
+	FindMapMode(gameMode, gMapMode, sizeof(gMapMode));
+}
+
+void InitMissionInfo(const char[] map)
+{
+	char query[PLATFORM_MAX_PATH];
+	Format(query, sizeof(query), "select m.id,m.display_title from chapters c left join missions m on c.mission_id=m.id where c.map='%s' and mode ='%s'", map, gMapMode);
+	DBResultSet rs = SQL_Query(hDatabase, query);
+	SQL_FetchRow(rs);
+	gMissionId = SQL_FetchInt(rs, 0);
+	SQL_FetchString(rs, 1, gMissionName, sizeof(gMissionName));
+}
+
+void FindMapMode(const char[] gamemode, char[] buffer, int maxlength)
+{
+	char query[PLATFORM_MAX_PATH];
+	Format(query, sizeof(query), "select mapmode from modes where gamemode='%s'", gamemode);
+	DBResultSet rs = SQL_Query(hDatabase, query);
+	SQL_FetchRow(rs);
+	SQL_FetchString(rs, 0, buffer, maxlength);
 }
 
 public void OnMapInit(const char[] mapName)
 {
-	// char mission[PLATFORM_MAX_PATH];
-	// gChapters.GetString(mapName, mission, sizeof(mission));
-	// cvarCurrentMission.SetString(mission);
-	// //检查是否是最后一关
-	// ArrayList chapters;
-	// gMissions.GetValue(mission, chapters);
-	// int chapterIndex = chapters.FindString(mapName);
-	// if (chapterIndex == chapters.Length - 1)
-	// {
-	// 	LogMessage("Is Finale Map>>>");
-	// 	char nextMap[PLATFORM_MAX_PATH];
-	// 	cvarNextChapter.GetString(nextMap, sizeof(nextMap));
-	// 	if (!IsMapValid(nextMap))
-	// 	{
-	// 		SetRandomMission(mission);
-	// 	}
-	// }
+	InitMapMode();
+	InitMissionInfo(mapName);
+	InitChapters();
+	int chapterIndex = gChapters.FindString(mapName);
+	if (chapterIndex == gChapters.Length - 1)
+	{
+		LogMessage("Is Finale Map>>>");
+		char nextMap[PLATFORM_MAX_PATH];
+		cvarNextChapter.GetString(nextMap, sizeof(nextMap));
+		if (!IsMapValid(nextMap))
+		{
+			int missionIndex	 = gMissionIds.FindValue(gMissionId);
+			int nextMissionIndex = missionIndex + 1;
+			nextMissionIndex	 = nextMissionIndex % gMissionIds.Length;
+			gMissionChapters.GetString(nextMissionIndex, nextMap, sizeof(nextMap));
+			cvarNextChapter.SetString(nextMap, true);
+		}
+	}
 }
 
 bool OpenDatabase()
@@ -84,16 +115,16 @@ int FindMissionId(const char[] mode, const char[] name)
 {
 	char query[PLATFORM_MAX_PATH];
 	Format(query, sizeof(query), "select id from missions where mode='%s' and name='%s'", mode, name);
-	DBResultSet res = SQL_Query(hDatabase, query);
-	if (res == null)
+	DBResultSet rs = SQL_Query(hDatabase, query);
+	if (rs == null)
 	{
 		return 0;
 	}
-	if (!SQL_FetchRow(res))
+	if (!SQL_FetchRow(rs))
 	{
 		return 0;
 	}
-	return SQL_FetchInt(res, 0);
+	return SQL_FetchInt(rs, 0);
 }
 
 int SaveMission(const char[] mode, const char[] name, const char[] display_title, const char[] version, const char[] author)
@@ -108,12 +139,6 @@ int SaveMission(const char[] mode, const char[] name, const char[] display_title
 		return 0;
 	}
 	DBResultSet res = SQL_Query(hDatabase, "select @@IDENTITY;");
-	if (res == null)
-	{
-		SQL_GetError(hDatabase, err, sizeof(err));
-		LogError("exec sql err:%s,sql:%s", err, query);
-		return 0;
-	}
 	SQL_FetchRow(res);
 	return SQL_FetchInt(res, 0);
 }
@@ -130,14 +155,17 @@ void SaveChapter(int mission_id, const char[] map, const char[] display_name)
 	}
 }
 
-void GetMissionList()
+void InitMissions()
 {
-	gMissions = new StringMap();
+	gMissionIds		 = new ArrayList();
+	gMissionNames	 = new ArrayList();
+	gMissionChapters = new ArrayList();
+
 	char gamemode[20];
 	FindConVar("mp_gamemode").GetString(gamemode, sizeof(gamemode));
 	char err[PLATFORM_MAX_PATH];
 	char query[PLATFORM_MAX_PATH];
-	Format(query, sizeof(query), "select id,display_title from missions where mode in (select mapmode from modes where gamemode='%s') order by sort_num asc,display_title asc", gamemode);
+	Format(query, sizeof(query), "select m.id,m.display_title,c.map from chapters c left join missions m on c.mission_id=m.id where c.id in (select min(id) from chapters GROUP BY mission_id) and  mode = (select mapmode from modes where gamemode='%s') order by m.sort_num asc, m.display_title asc", gamemode);
 	DBResultSet rs = SQL_Query(hDatabase, query);
 	if (rs == null)
 	{
@@ -147,41 +175,36 @@ void GetMissionList()
 	}
 	while (SQL_FetchRow(rs))
 	{
-		char displayTitle[PLATFORM_MAX_PATH];
+		char missionName[MAX_NAME_LENGTH];
+		char chapter[MAX_NAME_LENGTH];
+
 		int	 missionId = SQL_FetchInt(rs, 0);
-		char missionIdStr[50];
-		IntToString(missionId, missionIdStr, sizeof(missionIdStr));
-		SQL_FetchString(rs, 1, displayTitle, sizeof(displayTitle));
-		gMissions.SetString(displayTitle, missionIdStr, true);
+		SQL_FetchString(rs, 1, missionName, sizeof(missionName));
+		SQL_FetchString(rs, 2, chapter, sizeof(chapter));
+
+		gMissionIds.Push(missionId);
+		gMissionNames.PushString(missionName);
+		gMissionChapters.PushString(chapter);
 	}
 }
 
-ArrayList GetChapters(int missionId)
+void InitChapters()
 {
-	ArrayList res = new ArrayList();
-	char	  err[PLATFORM_MAX_PATH];
-	char	  query[PLATFORM_MAX_PATH];
-	Format(query, sizeof(query), "select map from chapters where mission_id=%d", missionId);
+	gChapters = new ArrayList();
+	char query[PLATFORM_MAX_PATH];
+	Format(query, sizeof(query), "select map from chapters where mission_id=%d", gMissionId);
 	DBResultSet rs = SQL_Query(hDatabase, query);
-	if (rs == null)
-	{
-		SQL_GetError(hDatabase, err, sizeof(err));
-		LogError("exec sql err:%s,sql:%s", err, query);
-		return res;
-	}
 	while (SQL_FetchRow(rs))
 	{
 		char chapter[PLATFORM_MAX_PATH];
 		SQL_FetchString(rs, 0, chapter, sizeof(chapter));
-		res.PushString(chapter);
+		gChapters.PushString(chapter);
 	}
-	return res;
 }
 
-void LoadMapList()
+void ReadMissions()
 {
-	LogMessage("LoadMapList>>>");
-
+	LogMessage("ReadMissions>>>");
 	DirectoryListing dirList = OpenDirectory("missions", true, NULL_STRING);
 	KeyValues		 kv		 = CreateKeyValues("mission", "", "");
 	if (dirList)
@@ -260,37 +283,38 @@ void LoadMapList()
 	}
 }
 
-int MissionMenuHandler(Menu menu, MenuAction action, int param1, int param2)
+
+int ChangeMissionMenuHandler(Menu menu, MenuAction action, int param1, int param2)
 {
-	char menuInfo[80];
-	char menuName[80];
+	char chapter[MAX_NAME_LENGTH];
+	char missionName[MAX_NAME_LENGTH];
 	if (action == MenuAction_Select)
 	{
-		menu.GetItem(param2, menuInfo, sizeof(menuInfo), _, menuName, sizeof(menuName));
-		int missionId = StringToInt(menuInfo);
+		menu.GetItem(param2, chapter, sizeof(chapter), _, missionName, sizeof(missionName));
+		Menu actionMenu = new Menu(ChangeActionMenuHandler);
+		actionMenu.SetTitle(missionName);
+		char actionMenuInfo1[PLATFORM_MAX_PATH];
+		Format(actionMenuInfo1, sizeof(actionMenuInfo1), "%s,%s,%s", missionName, chapter, "0");
+		char actionMenuInfo2[PLATFORM_MAX_PATH];
+		Format(actionMenuInfo2, sizeof(actionMenuInfo2), "%s,%s,%s", missionName, chapter, "1");
+		actionMenu.AddItem(actionMenuInfo1, "强制更换");
+		actionMenu.AddItem(actionMenuInfo2, "预定");
+		actionMenu.ExitButton = true;
+		actionMenu.Display(param1, MENU_TIME_FOREVER);
 	}
-
 	return 0;
 }
 
-int ChapterMenuHandler(Menu menu, MenuAction action, int param1, int param2)
+int ChangeChapterMenuHandler(Menu menu, MenuAction action, int param1, int param2)
 {
-	char menuInfo[80];
 	if (action == MenuAction_Select)
 	{
-		char menuName[80];
-		menu.GetItem(param2, menuInfo, sizeof(menuInfo), _, menuName, sizeof(menuName));
-		Menu actionMenu = new Menu(ChangeActionMenuHandler);
-		actionMenu.SetTitle(menuName);
-		char actionMenuInfo1[PLATFORM_MAX_PATH];
-		Format(actionMenuInfo1, sizeof(actionMenuInfo1), "%s,%s", menuInfo, "0");
-		char actionMenuInfo2[PLATFORM_MAX_PATH];
-		Format(actionMenuInfo2, sizeof(actionMenuInfo2), "%s,%s", menuInfo, "1");
-		actionMenu.AddItem(actionMenuInfo1, "强制更换");
-		actionMenu.AddItem(actionMenuInfo2, "预定");
-		actionMenu.ExitButton	  = true;
-		actionMenu.ExitBackButton = true;
-		actionMenu.Display(param1, MENU_TIME_FOREVER);
+		char chapter[MAX_NAME_LENGTH];
+		char missionName[MAX_NAME_LENGTH];
+		menu.GetItem(param2, chapter, sizeof(chapter), _, missionName, sizeof(missionName));
+		char menuInfo[PLATFORM_MAX_PATH];
+		Format(menuInfo, sizeof(menuInfo), "%s,%s,0", missionName, chapter);
+		ChangeChapter(menuInfo);
 	}
 	return 0;
 }
@@ -301,22 +325,20 @@ void DoVoteMenu(const char[] menuInfo)
 	{
 		return;
 	}
+	char buffers[3][PLATFORM_MAX_PATH];
+	ExplodeString(menuInfo, ",", buffers, 3, PLATFORM_MAX_PATH);
 	Menu menu = new Menu(Handle_VoteMenu, MenuAction_Display);
-	menu.SetTitle("change map to?");
+	menu.SetTitle("change map?");
 	menu.AddItem(menuInfo, "Yes");
 	menu.AddItem(menuInfo, "No");
 	menu.ExitButton = false;
 	menu.DisplayVoteToAll(20);
 }
 
-void DoChangeMission(const char[] menuInfo)
+void ChangeChapter(const char[] menuInfo)
 {
 	char buffers[3][PLATFORM_MAX_PATH];
-	if (ExplodeString(menuInfo, ",", buffers, 3, PLATFORM_MAX_PATH) != 3)
-	{
-		LogMessage("DoChangeMission error menuInfo :%s", menuInfo);
-		return;
-	}
+	ExplodeString(menuInfo, ",", buffers, 3, PLATFORM_MAX_PATH);
 	LogMessage("DoChangeMission mission :%s, chapter:%s ,changeMode:%s", buffers[0], buffers[1], buffers[2]);
 	int changeMode = StringToInt(buffers[2]);
 	if (changeMode == 0)
@@ -335,7 +357,6 @@ void DoChangeMission(const char[] menuInfo)
 	}
 	else
 	{
-		cvarNextMission.SetString(buffers[0]);
 		cvarNextChapter.SetString(buffers[1]);
 		PrintToChatAll("[BS]下一张地图已预定为[%t]-[%s]", buffers[0], buffers[1]);
 	}
@@ -353,7 +374,7 @@ public int Handle_VoteMenu(Menu menu, MenuAction action, int param1, int param2)
 		{
 			char menuInfo[PLATFORM_MAX_PATH];
 			menu.GetItem(param1, menuInfo, sizeof(menuInfo));
-			DoChangeMission(menuInfo);
+			ChangeChapter(menuInfo);
 		}
 	}
 	else if (action == MenuAction_Display)
@@ -366,19 +387,16 @@ public int Handle_VoteMenu(Menu menu, MenuAction action, int param1, int param2)
 		int	  changeMode = StringToInt(buffers[2]);
 		Panel panel		 = view_as<Panel>(param2);
 		char  voteTitle[PLATFORM_MAX_PATH];
-		char  localizeMission[PLATFORM_MAX_PATH];
-		Format(localizeMission, sizeof(localizeMission), "%T", buffers[0], param1);
 		if (changeMode == 0)
 		{
-			Format(voteTitle, sizeof(voteTitle), "更换地图[%s]-[%s]", localizeMission, buffers[1]);
+			Format(voteTitle, sizeof(voteTitle), "更换地图[%s]-[%s]", buffers[0], buffers[1]);
 		}
 		else
 		{
-			Format(voteTitle, sizeof(voteTitle), "预定地图[%s]-[%s]", localizeMission, buffers[1]);
+			Format(voteTitle, sizeof(voteTitle), "预定地图[%s]-[%s]", buffers[0], buffers[1]);
 		}
 		panel.SetTitle(voteTitle);
 	}
-
 	return 0;
 }
 
@@ -389,23 +407,13 @@ int ChangeActionMenuHandler(Menu menu, MenuAction action, int param1, int param2
 		delete menu;
 		return 0;
 	}
-
 	char menuInfo[PLATFORM_MAX_PATH];
-	if (action == MenuAction_Cancel)
-	{
-		if (param2 == MenuCancel_ExitBack && gChapterMenu)
-		{
-			menu.GetItem(0, menuInfo, sizeof(menuInfo));
-			int lastPage = StringToInt(menuInfo, 10);
-			gChapterMenu.DisplayAt(param1, lastPage, MENU_TIME_FOREVER)
-		}
-	}
-	else if (action == MenuAction_Select)
+	if (action == MenuAction_Select)
 	{
 		menu.GetItem(param2, menuInfo, sizeof(menuInfo));
 		if (GetUserFlagBits(param1) & ADMFLAG_ROOT == ADMFLAG_ROOT)
 		{
-			DoChangeMission(menuInfo);
+			ChangeChapter(menuInfo);
 		}
 		else
 		{
@@ -415,32 +423,18 @@ int ChangeActionMenuHandler(Menu menu, MenuAction action, int param1, int param2
 	return 0;
 }
 
-Action Command_ChangeDiff(int client, int args)
-{
-	if (args < 1)
-	{
-		PrintToChat(client, "\x04[BS]\x05!diff空格+难度(Easy|Normal|Hard|Impossible)");
-		return Plugin_Handled;
-	}
-	char difficulty[256];
-	GetCmdArgString(difficulty, 64);
-	SetConVarString(FindConVar("z_difficulty"), difficulty, false, false);
-	PrintToChatAll("\x04[BS]\x05当前难度已更换成\x04[\x03%s\x04]", difficulty);
-	return Plugin_Handled;
-}
-
 Action Command_ChangeMission(int client, int args)
 {
-	gMissionMenu = new Menu(MissionMenuHandler);
+	gMissionMenu = new Menu(ChangeMissionMenuHandler);
 	gMissionMenu.SetTitle("请选择任务");
-	StringMapSnapshot keys = gMissions.Snapshot();
-	for (int i = 0; i < keys.Length; i++)
+
+	for (int i = 0; i < gMissionNames.Length; i++)
 	{
-		char buffer[128];
-		char missionId[50];
-		keys.GetKey(i, buffer, sizeof(buffer));
-		gMissions.GetString(buffer, missionId, sizeof(missionId));
-		gMissionMenu.AddItem(missionId, buffer);
+		char missionName[MAX_NAME_LENGTH];
+		char chapter[MAX_NAME_LENGTH];
+		gMissionNames.GetString(i, missionName, sizeof(missionName));
+		gMissionChapters.GetString(i, chapter, sizeof(chapter));
+		gMissionMenu.AddItem(chapter, missionName);
 	}
 	gMissionMenu.ExitButton = true;
 	gMissionMenu.Display(client, MENU_TIME_FOREVER);
@@ -449,13 +443,12 @@ Action Command_ChangeMission(int client, int args)
 
 Action Command_ChangeChapter(int client, int args)
 {
-	gChapterMenu = new Menu(ChapterMenuHandler);
+	gChapterMenu = new Menu(ChangeChapterMenuHandler);
 	gChapterMenu.SetTitle("选择章节");
-	StringMapSnapshot keys = gChapters.Snapshot();
-	for (int i = 0; i < keys.Length; i++)
+	for (int i = 0; i < gChapters.Length; i++)
 	{
 		char buffer[128];
-		keys.GetKey(i, buffer, sizeof(buffer));
+		gChapters.GetString(i, buffer, sizeof(buffer));
 		gMissionMenu.AddItem(buffer, buffer);
 	}
 	gChapterMenu.ExitButton = true;
@@ -463,23 +456,10 @@ Action Command_ChangeChapter(int client, int args)
 	return Plugin_Handled;
 }
 
-Action Command_ChangeMode(int client, int args)
+Action Command_ReadMissions(int client, args)
 {
-	if (args < 1)
-	{
-		PrintToChat(client, "\x04[BS]\x05!mode空格+模式(coop|realism|community1|community5|mutation4)");
-		return Plugin_Handled;
-	}
-	char mode[256];
-	GetCmdArgString(mode, 64);
-	SetConVarString(FindConVar("mp_gamemode"), mode);
-	PrintToChatAll("\x04[BS]\x05当前模式已更换成\x04[\x03%s\x04]", mode);
-	return Plugin_Handled;
-}
-
-Action Command_RefreshMap(int client, args)
-{
-	LoadMapList();
+	ReadMissions();
+	InitMissions();
 	return Plugin_Handled;
 }
 
@@ -489,9 +469,8 @@ public void OnFinaleWin(Event event, char[] name, bool dontBroadcast)
 	cvarNextChapter.GetString(nextChapter, sizeof(nextChapter));
 	if (IsMapValid(nextChapter))
 	{
-		ForceChangeLevel(nextChapter, "admin Change Map");
+		ForceChangeLevel(nextChapter, "Admin Change Map");
 		cvarNextChapter.SetString("");
-		cvarNextMission.SetString("");
 	}
 }
 
